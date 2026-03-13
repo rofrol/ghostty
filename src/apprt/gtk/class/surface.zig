@@ -2870,9 +2870,17 @@ pub const Surface = extern struct {
         //
         // It's better to do this here rather than within the core callback
         // since we have direct access to the underlying gdk.Event here.
+        //
+        // We only do this for touchscreen events to avoid triggering the
+        // on-screen keyboard when using a mouse or trackpad (e.g. on
+        // Steam Deck in desktop mode).
         if (!consumed and button == .left and !surface.hasSelection()) {
-            if (!self.showOnScreenKeyboard(event)) {
-                log.warn("failed to activate the on-screen keyboard", .{});
+            const is_touch = if (event.getDevice()) |device| device.getSource() == .touchscreen else false;
+
+            if (is_touch) {
+                if (!self.showOnScreenKeyboard(event)) {
+                    log.warn("failed to activate the on-screen keyboard", .{});
+                }
             }
         }
     }
