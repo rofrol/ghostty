@@ -248,6 +248,7 @@ template $GhosttySurface: Adw.Bin {
 
 IMMulticontext im_context {
   input-purpose: terminal;
+  input-hints: inhibit_osk;
   preedit-start => $im_preedit_start();
   preedit-changed => $im_preedit_changed();
   preedit-end => $im_preedit_end();
