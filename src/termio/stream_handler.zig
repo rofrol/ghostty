@@ -80,6 +80,10 @@ pub const StreamHandler = struct {
     /// Requests carrying a granted password skip the permission prompt.
     kitty_clipboard_grants: terminal.kitty.clipboard.Grants = .{},
 
+    /// The Kitty desktop notification (OSC 99) being assembled from its
+    /// chunks, shown once complete.
+    kitty_notification: terminal.kitty.desktop_notification = .{},
+
     /// The in-flight Kitty clipboard protocol (OSC 5522) write
     /// transaction, if any.
     kitty_clipboard_write: ?*terminal.kitty.clipboard.WriteState = null,
@@ -103,6 +107,7 @@ pub const StreamHandler = struct {
         self.dcs.deinit();
         self.kittyClipboardWriteAbort();
         self.kitty_clipboard_grants.deinit(self.alloc);
+        self.kitty_notification.deinit(self.alloc);
         if (comptime tmux_enabled) tmux: {
             const viewer = self.tmux_viewer orelse break :tmux;
             viewer.deinit();
@@ -348,6 +353,10 @@ pub const StreamHandler = struct {
             .window_title => try self.windowTitle(value.title),
             .report_pwd => try self.reportPwd(value.url),
             .show_desktop_notification => try self.showDesktopNotification(value.title, value.body),
+            .kitty_desktop_notification => {
+                const n = try self.kitty_notification.add(self.alloc, value) orelse return;
+                try self.showDesktopNotification(n.title, n.body);
+            },
             .progress_report => self.progressReport(value),
             .start_hyperlink => try self.startHyperlink(value.uri, value.id),
             .clipboard_contents => try self.clipboardContents(value.kind, value.data),
@@ -377,7 +386,6 @@ pub const StreamHandler = struct {
             .title_push,
             .title_pop,
             .kitty_dnd,
-            .kitty_desktop_notification,
             .osc_unknown,
             .program_status,
             => {},
@@ -935,6 +943,9 @@ pub const StreamHandler = struct {
         // Full reset clears Kitty clipboard session grants.
         self.kitty_clipboard_grants.deinit(self.alloc);
         self.kitty_clipboard_grants = .{};
+
+        // Full reset abandons an unfinished desktop notification.
+        self.kitty_notification.deinit(self.alloc);
 
         // Reset resets our palette so we report it for mode 2031.
         self.messageWriter(.{ .color_scheme_report = .{ .force = false } });
