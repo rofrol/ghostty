@@ -98,7 +98,7 @@ extern "C" {
  * | `GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES`| `GhosttyTerminalDeviceAttributesFn`| Device attributes query (CSI c / > c / = c)|
  * | `GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE`  | `GhosttyTerminalClipboardWriteFn` | Clipboard write via OSC 52 / OSC 1337 / OSC 5522 |
  * | `GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ`   | `GhosttyTerminalClipboardReadFn`  | Clipboard read via OSC 52 "?" / OSC 5522  |
- * | `GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION`| `GhosttyTerminalDesktopNotificationFn` | Desktop notification via OSC 9 / OSC 777 |
+ * | `GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION`| `GhosttyTerminalDesktopNotificationFn` | Desktop notification via OSC 9 / OSC 777 / OSC 99 |
  * | `GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT`  | `GhosttyTerminalProgressReportFn` | Progress report via OSC 9;4               |
  * | `GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS`   | `GhosttyTerminalProgramStatusFn`  | Program status report via OSC 7501        |
  * | `GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE` | `GhosttyTerminalUnknownSequenceFn` | APC or OSC sequence that libghostty-vt does not implement (see Unsupported Sequences) |
@@ -1342,7 +1342,10 @@ typedef struct {
 /**
  * Callback function type for desktop notifications.
  *
- * Called synchronously when the terminal receives OSC 9 or OSC 777.
+ * Called synchronously when the terminal receives OSC 9 or OSC 777, or
+ * the last chunk of a Kitty desktop notification (OSC 99). The chunks of an
+ * OSC 99 notification are assembled and its Base64 payloads decoded first;
+ * its title is empty when it carries only a body.
  *
  * @param terminal The terminal handle
  * @param userdata The userdata pointer set via GHOSTTY_TERMINAL_OPT_USERDATA
@@ -2503,7 +2506,7 @@ typedef enum GHOSTTY_ENUM_TYPED {
 
   /**
    * Callback invoked when the running program requests a desktop
-   * notification via OSC 9 or OSC 777. Set to NULL to ignore desktop
+   * notification via OSC 9, OSC 777 or OSC 99. Set to NULL to ignore desktop
    * notification requests.
    *
    * Input type: GhosttyTerminalDesktopNotificationFn

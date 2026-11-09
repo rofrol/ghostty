@@ -29,6 +29,13 @@ pub const OSC = struct {
     pub fn readOption(self: OSC, comptime key: Option) key.Type() {
         return key.read(self.metadata);
     }
+
+    /// We don't currently support encoding this to C in any way.
+    pub const C = void;
+
+    pub fn cval(_: OSC) C {
+        return {};
+    }
 };
 
 pub const Action = packed struct {

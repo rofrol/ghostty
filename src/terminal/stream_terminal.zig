@@ -20,6 +20,7 @@ const kitty_clipboard = @import("kitty/clipboard.zig");
 const kitty_color = @import("kitty/color.zig");
 const paste_pkg = @import("paste.zig");
 const kitty_dnd = @import("kitty/dnd.zig");
+const KittyNotificationAssembly = @import("kitty/desktop_notification.zig");
 const lib = @import("lib.zig");
 const size_report = @import("size_report.zig");
 const simd = @import("../simd/main.zig");
@@ -101,6 +102,11 @@ pub const Handler = struct {
     /// remember the user's decision.
     kitty_clipboard_grants: kitty_clipboard.Grants = .{},
 
+    /// The Kitty desktop notification (OSC 99) being assembled from its
+    /// chunks, reported through the desktop_notification effect once
+    /// complete.
+    kitty_notification: KittyNotificationAssembly = .{},
+
     /// Maximum total decoded bytes accumulated by one Kitty clipboard
     /// protocol (OSC 5522) write transaction, captured when the
     /// transaction begins. Data beyond the limit fails the transaction
@@ -174,8 +180,10 @@ pub const Handler = struct {
         bell: ?*const fn (*Handler) void,
 
         /// Called when the running program requests a desktop notification
-        /// via OSC 9 or OSC 777. The title and body are borrowed and only
-        /// valid for the duration of the callback.
+        /// via OSC 9, OSC 777, or a completed Kitty OSC 99 notification
+        /// (its chunks assembled, Base64 payloads decoded). The title and
+        /// body are borrowed and only valid for the duration of the
+        /// callback.
         desktop_notification: ?*const fn (*Handler, Action.ShowDesktopNotification) void,
 
         /// Called when drag and drop protocol state changes in a way the
@@ -510,6 +518,7 @@ pub const Handler = struct {
     pub fn deinit(self: *Handler) void {
         self.kittyClipboardAbort();
         self.kitty_clipboard_grants.deinit(self.terminal.gpa());
+        self.kitty_notification.deinit(self.terminal.gpa());
         self.apc_handler.deinit();
         self.dcs_handler.deinit();
     }
@@ -738,6 +747,9 @@ pub const Handler = struct {
                 self.kitty_clipboard_grants.deinit(self.terminal.gpa());
                 self.kitty_clipboard_grants = .{};
 
+                // Abandon an unfinished desktop notification
+                self.kitty_notification.deinit(self.terminal.gpa());
+
                 // Clear the progress bar and program status records
                 self.progressReport(.{ .state = .remove });
                 self.programStatusReport(.{ .state = .clear });
@@ -775,6 +787,7 @@ pub const Handler = struct {
             // Effect-based handlers
             .bell => self.bell(),
             .show_desktop_notification => self.desktopNotification(value),
+            .kitty_desktop_notification => try self.kittyDesktopNotification(value),
             .device_attributes => self.reportDeviceAttributes(value),
             .device_status => self.deviceStatus(value.request),
             .enquiry => self.reportEnquiry(),
@@ -912,6 +925,16 @@ pub const Handler = struct {
     ) void {
         const func = self.effects.desktop_notification orelse return;
         func(self, notification);
+    }
+
+    fn kittyDesktopNotification(
+        self: *Handler,
+        cmd: osc.Command.KittyDesktopNotification,
+    ) !void {
+        // Without a callback there is nothing to assemble for.
+        if (self.effects.desktop_notification == null) return;
+        const done = try self.kitty_notification.add(self.terminal.gpa(), cmd) orelse return;
+        self.desktopNotification(.{ .title = done.title, .body = done.body });
     }
 
     fn semanticPrompt(self: *Handler, cmd: osc.Command.SemanticPrompt) !void {
@@ -3973,6 +3996,108 @@ test "desktop_notification effect callback" {
     try testing.expectEqual(@as(usize, 2), S.count);
     try testing.expectEqualStrings("Codex", S.last_title);
     try testing.expectEqualStrings("Needs attention", S.last_body);
+}
+
+test "desktop_notification effect callback for OSC 99" {
+    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 80, .rows = 24 });
+    defer t.deinit(testing.allocator);
+
+    const S = struct {
+        var count: usize = 0;
+        var title: [64]u8 = undefined;
+        var title_len: usize = 0;
+        var body: [64]u8 = undefined;
+        var body_len: usize = 0;
+
+        fn desktopNotification(
+            _: *Handler,
+            notification: Action.ShowDesktopNotification,
+        ) void {
+            count += 1;
+            // The strings are borrowed: copy them out of the callback.
+            @memcpy(title[0..notification.title.len], notification.title);
+            title_len = notification.title.len;
+            @memcpy(body[0..notification.body.len], notification.body);
+            body_len = notification.body.len;
+        }
+
+        fn lastTitle() []const u8 {
+            return title[0..title_len];
+        }
+
+        fn lastBody() []const u8 {
+            return body[0..body_len];
+        }
+    };
+    S.count = 0;
+
+    var handler: Handler = .init(&t);
+    handler.effects.desktop_notification = &S.desktopNotification;
+
+    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = handler });
+    defer s.deinit();
+
+    // A single sequence with the default options is a complete
+    // notification carrying only a title.
+    s.nextSlice("\x1B]99;;Hello world\x1B\\");
+    try testing.expectEqual(@as(usize, 1), S.count);
+    try testing.expectEqualStrings("Hello world", S.lastTitle());
+    try testing.expectEqualStrings("", S.lastBody());
+
+    // A title and a body in chunks of one identifier: nothing is shown
+    // until the chunk with d=1 (the default) arrives.
+    s.nextSlice("\x1B]99;i=1:d=0;Build\x1B\\");
+    s.nextSlice("\x1B]99;i=1:d=0; finished\x1B\\");
+    s.nextSlice("\x1B]99;i=1:d=0:p=body;All tests\x1B\\");
+    try testing.expectEqual(@as(usize, 1), S.count);
+    s.nextSlice("\x1B]99;i=1:p=body; passed\x07");
+    try testing.expectEqual(@as(usize, 2), S.count);
+    try testing.expectEqualStrings("Build finished", S.lastTitle());
+    try testing.expectEqualStrings("All tests passed", S.lastBody());
+
+    // A Base64 encoded payload is decoded, chunk by chunk.
+    s.nextSlice("\x1B]99;i=b:d=0:e=1;SGk=\x1B\\");
+    s.nextSlice("\x1B]99;i=b:e=1:p=body;dGhlcmU=\x1B\\");
+    try testing.expectEqual(@as(usize, 3), S.count);
+    try testing.expectEqualStrings("Hi", S.lastTitle());
+    try testing.expectEqualStrings("there", S.lastBody());
+
+    // A decoded payload must be escape code safe UTF-8 too: the
+    // notification it belongs to is dropped ("\x1b[m" encoded).
+    s.nextSlice("\x1B]99;i=x:d=0;Unsafe\x1B\\");
+    s.nextSlice("\x1B]99;i=x:e=1:p=body;G1tt\x1B\\");
+    try testing.expectEqual(@as(usize, 3), S.count);
+
+    // A chunk of another identifier abandons the unfinished notification.
+    s.nextSlice("\x1B]99;i=old:d=0;Stale\x1B\\");
+    s.nextSlice("\x1B]99;i=new;Fresh\x1B\\");
+    try testing.expectEqual(@as(usize, 4), S.count);
+    try testing.expectEqualStrings("Fresh", S.lastTitle());
+    try testing.expectEqualStrings("", S.lastBody());
+    s.nextSlice("\x1B]99;i=old;Late\x1B\\");
+    try testing.expectEqual(@as(usize, 5), S.count);
+    try testing.expectEqualStrings("Late", S.lastTitle());
+
+    // Payloads that are no part of the notification's text (icons,
+    // buttons) do not change it, though their d=1 still completes it;
+    // a query, a close or an alive request is no notification at all.
+    s.nextSlice("\x1B]99;i=2:d=0;Titled\x1B\\");
+    s.nextSlice("\x1B]99;i=2:p=buttons;Yes\x1B\\");
+    try testing.expectEqual(@as(usize, 6), S.count);
+    try testing.expectEqualStrings("Titled", S.lastTitle());
+    try testing.expectEqualStrings("", S.lastBody());
+    s.nextSlice("\x1B]99;i=3:p=?;\x1B\\");
+    s.nextSlice("\x1B]99;i=3:p=close;\x1B\\");
+    s.nextSlice("\x1B]99;i=3:p=alive;\x1B\\");
+    try testing.expectEqual(@as(usize, 6), S.count);
+
+    // A full reset abandons an unfinished notification.
+    s.nextSlice("\x1B]99;i=4:d=0;Before reset\x1B\\");
+    s.nextSlice("\x1Bc");
+    s.nextSlice("\x1B]99;i=4:p=body;After\x1B\\");
+    try testing.expectEqual(@as(usize, 7), S.count);
+    try testing.expectEqualStrings("", S.lastTitle());
+    try testing.expectEqualStrings("After", S.lastBody());
 }
 
 test "resize_window effect callback" {

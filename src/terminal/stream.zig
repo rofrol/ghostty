@@ -142,6 +142,7 @@ pub const Action = union(Key) {
     forward_index,
     insert_columns: usize,
     delete_columns: usize,
+    kitty_desktop_notification: KittyDesktopNotification,
 
     pub const Key = lib.Enum(
         lib.target,
@@ -254,6 +255,7 @@ pub const Action = union(Key) {
             "forward_index",
             "insert_columns",
             "delete_columns",
+            "kitty_desktop_notification",
         },
     );
 
@@ -550,6 +552,8 @@ pub const Action = union(Key) {
     pub const KittyClipboard = osc.Command.KittyClipboardProtocol;
 
     pub const KittyDnd = osc.Command.KittyDndProtocol;
+
+    pub const KittyDesktopNotification = osc.Command.KittyDesktopNotification;
 
     pub const ProgramStatus = osc.Command.ProgramStatus;
 };
@@ -3032,6 +3036,10 @@ pub fn Stream(comptime H: type) type {
                     self.handler.vt(.program_status, v);
                 },
 
+                .kitty_desktop_notification => |v| {
+                    self.handler.vt(.kitty_desktop_notification, v);
+                },
+
                 .unknown => |v| {
                     @branchHint(.unlikely);
                     self.handler.vt(.osc_unknown, v);
@@ -3047,7 +3055,6 @@ pub fn Stream(comptime H: type) type {
                 .conemu_output_environment_variable,
                 .conemu_run_process,
                 .kitty_text_sizing,
-                .kitty_desktop_notification,
                 .hierarchical_context,
                 => {
                     log.debug("unimplemented OSC callback: {}", .{cmd});
